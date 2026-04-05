@@ -54,9 +54,11 @@ const Transactions = () => {
                                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                             })}
                         </td>
-                        <td style={{ padding: '1.2rem 1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <td style={{ padding: '1.2rem 1rem', fontWeight: 700 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             {tx.symbol === 'USD' ? <Target size={16} color="var(--text-secondary)"/> : tx.transaction_type === "BUY" ? <TrendingUp size={16} color="var(--accent-green)"/> : <TrendingDown size={16} color="var(--accent-red)"/> }
                             {tx.symbol}
+                            </div>
                         </td>
                         <td style={{ 
                             padding: '1.2rem 1rem', fontWeight: 600,

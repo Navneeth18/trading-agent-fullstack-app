@@ -3,11 +3,32 @@ import { BookOpen, UploadCloud } from 'lucide-react';
 
 const KnowledgeBase = () => {
   const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState(null); // { type: 'success'|'error', text: string }
 
-  const handleUpload = () => {
-    if (file) {
-      alert(`Simulating upload for ${file.name}. This would be sent to /api/knowledge/upload and ingested via RAG.`);
+  const handleUpload = async () => {
+    if (!file) return;
+    setUploading(true);
+    setUploadResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      await fetch('http://localhost:8000/api/knowledge/upload', {
+        method: 'POST',
+        body: formData,
+      }).then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(err.detail || 'Upload failed');
+        }
+        return res.json();
+      });
+      setUploadResult({ type: 'success', text: `"${file.name}" uploaded and injected into the RAG Vector DB.` });
       setFile(null);
+    } catch (e) {
+      setUploadResult({ type: 'error', text: `Upload failed: ${e.message}` });
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -42,13 +63,25 @@ const KnowledgeBase = () => {
           </div>
         )}
 
+        {uploadResult && (
+          <div style={{
+            marginTop: '1rem', padding: '0.8rem 1.2rem', borderRadius: '8px',
+            background: uploadResult.type === 'success' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
+            border: `1px solid ${uploadResult.type === 'success' ? 'var(--accent-green)' : 'var(--accent-red)'}`,
+            color: uploadResult.type === 'success' ? 'var(--accent-green)' : 'var(--accent-red)',
+            fontSize: '0.9rem'
+          }}>
+            {uploadResult.text}
+          </div>
+        )}
+
         <button 
           className="btn" 
           onClick={handleUpload} 
-          disabled={!file}
-          style={{ marginTop: '2rem', opacity: file ? 1 : 0.5 }}
+          disabled={!file || uploading}
+          style={{ marginTop: '2rem', opacity: file && !uploading ? 1 : 0.5 }}
         >
-          Inject to RAG Vector DB
+          {uploading ? 'Uploading…' : 'Inject to RAG Vector DB'}
         </button>
       </div>
     </div>

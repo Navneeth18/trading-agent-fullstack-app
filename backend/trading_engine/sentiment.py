@@ -1,22 +1,19 @@
 import torch
 from transformers import BertTokenizer, BertForSequenceClassification
-import yfinance as yf
-from typing import List, Dict
 import os
 import asyncio
+import re
+from typing import Dict
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# We try to use the pre-downloaded local instance from TradingAgents to save bandwidth
 LOCAL_TARGET = "d:/Minor Project/project-2/TradingAgents/model/finbert"
 MODEL_NAME = LOCAL_TARGET if os.path.exists(LOCAL_TARGET) else "ProsusAI/finbert"
 
 class SentimentAnalyst:
-    """Analyzes news sentiment using FinBERT mapped directly to CPU pipeline."""
-    
     _instance = None
-    
+
     @classmethod
     def get_instance(cls):
         if cls._instance is None:
@@ -24,51 +21,46 @@ class SentimentAnalyst:
         return cls._instance
 
     def __init__(self):
-        print(f"[SentimentAnalyst] Booting PyTorch with model: {MODEL_NAME}")
-        self.tokenizer = BertTokenizer.from_pretrained(MODEL_NAME, local_files_only=os.path.exists(LOCAL_TARGET))
-        self.model = BertForSequenceClassification.from_pretrained(MODEL_NAME, local_files_only=os.path.exists(LOCAL_TARGET))
+        print(f"[SentimentAnalyst] Loading FinBERT from: {MODEL_NAME}")
+        local_only = os.path.exists(LOCAL_TARGET)
+        self.tokenizer = BertTokenizer.from_pretrained(MODEL_NAME, local_files_only=local_only)
+        self.model = BertForSequenceClassification.from_pretrained(MODEL_NAME, local_files_only=local_only)
         self.model.eval()
         self.device = torch.device("cpu")
         self.model.to(self.device)
-        self.labels = ['positive', 'negative', 'neutral'] # FinBert standard output logic
-        
-    def analyze_headline(self, headline: str) -> Dict[str, float]:
+        self.labels = ['positive', 'negative', 'neutral']
+
+    def analyze_headline(self, headline: str) -> Dict:
         inputs = self.tokenizer(headline, return_tensors="pt", truncation=True, max_length=512, padding=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
         with torch.no_grad():
             outputs = self.model(**inputs)
             probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            
         scores = {label: float(prob) for label, prob in zip(self.labels, probs[0])}
         sentiment = max(scores, key=scores.get)
-        
-        return {
-            'sentiment': sentiment,
-            'scores': scores,
-            'confidence': scores[sentiment]
-        }
-        
+        return {"sentiment": sentiment, "scores": scores, "confidence": scores[sentiment]}
+
     async def analyze_news_async(self, ticker: str, limit: int = 15) -> Dict:
-        """Fetch multiple sources physically concurrently and score"""
         def fetch_and_score():
             import feedparser
             import requests
             from datetime import datetime, timedelta
-            import re
-            
+
             headlines = []
-            
+
             # 1. Google News RSS
             try:
                 feed = feedparser.parse(f"https://news.google.com/rss/search?q={ticker}+stock+news&hl=en-US")
                 for entry in feed.entries[:10]:
-                    title = entry.get('title', '')
-                    title = re.sub(r'\s[-|]\s.*$', '', title.strip())
-                    if len(title) > 5: headlines.append(title)
-            except Exception: pass
+                    title = entry.get("title", "")
+                    # Strip source suffix like " - Reuters"
+                    title = re.sub(r"\s[-|]\s[^-|]+$", "", title.strip())
+                    if len(title) > 5:
+                        headlines.append(title)
+            except Exception:
+                pass
 
-            # 2. Finnhub 3-Day Institutional Corporate News
+            # 2. Finnhub company news (last 3 days)
             try:
                 finnhub_key = os.getenv("FINNHUB_API_KEY", "")
                 if finnhub_key:
@@ -80,41 +72,36 @@ class SentimentAnalyst:
                         for item in res.json()[:10]:
                             hl = item.get("headline", "")
                             summary = item.get("summary", "")
-                            text = f"{hl}. {summary}".strip()
-                            if len(text) > 10: headlines.append(text)
-            except Exception: pass
+                            text = f"{hl}. {summary}".strip(". ")
+                            if len(text) > 10:
+                                headlines.append(text)
+            except Exception:
+                pass
 
-            # Deduplicate by removing exact string duplicates
-            unique_headlines = list(set(headlines))[:limit]
+            unique_headlines = list(dict.fromkeys(headlines))[:limit]
 
             if not unique_headlines:
                 return {
-                    'ticker': ticker, 'avg_sentiment': 'neutral', 'avg_score': 0.0,
-                    'positive_ratio': 0.0, 'negative_ratio': 0.0, 'neutral_ratio': 0.0,
-                    'total_headlines': 0
+                    "ticker": ticker, "avg_sentiment": "neutral", "avg_score": 0.0,
+                    "positive_ratio": 0.0, "negative_ratio": 0.0, "neutral_ratio": 0.0,
+                    "total_headlines": 0,
                 }
-            
+
             results = [self.analyze_headline(h) for h in unique_headlines]
-            
-            p_count = sum(1 for r in results if r['sentiment'] == 'positive')
-            n_count = sum(1 for r in results if r['sentiment'] == 'negative')
-            neu_count = sum(1 for r in results if r['sentiment'] == 'neutral')
+            p = sum(1 for r in results if r["sentiment"] == "positive")
+            n = sum(1 for r in results if r["sentiment"] == "negative")
+            neu = sum(1 for r in results if r["sentiment"] == "neutral")
             t = len(results)
-            
-            score = (p_count - n_count) / t
-            
-            if score > 0.2: avg_s = 'positive'
-            elif score < -0.2: avg_s = 'negative'
-            else: avg_s = 'neutral'
-            
+            score = (p - n) / t
+
             return {
-                'ticker': ticker,
-                'avg_sentiment': avg_s,
-                'avg_score': score,
-                'positive_ratio': p_count / t,
-                'negative_ratio': n_count / t,
-                'neutral_ratio': neu_count / t,
-                'total_headlines': t
+                "ticker": ticker,
+                "avg_sentiment": "positive" if score > 0.2 else "negative" if score < -0.2 else "neutral",
+                "avg_score": round(score, 4),
+                "positive_ratio": round(p / t, 4),
+                "negative_ratio": round(n / t, 4),
+                "neutral_ratio": round(neu / t, 4),
+                "total_headlines": t,
             }
-            
+
         return await asyncio.to_thread(fetch_and_score)

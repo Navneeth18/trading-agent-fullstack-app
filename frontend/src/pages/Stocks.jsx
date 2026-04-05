@@ -11,6 +11,7 @@ const API_URL = 'http://localhost:8000/api/portfolio';
 const Stocks = () => {
   const [tracked, setTracked] = useState([]);
   const [newStock, setNewStock] = useState('');
+  const [trackError, setTrackError] = useState('');
   
   // Per-stock state isolation
   const [activeRanges, setActiveRanges] = useState({}); // { MSFT: '1mo', AAPL: '1y' }
@@ -66,14 +67,21 @@ const Stocks = () => {
   };
 
   const handleAddTrack = async () => {
-    if(newStock && !tracked.includes(newStock.toUpperCase())) {
-      const sym = newStock.toUpperCase();
-      await axios.post(`${API_URL}/tracked-stocks?symbol=${sym}`);
-      setTracked([...tracked, sym]);
-      setActiveRanges(prev => ({...prev, [sym]: '1mo'}));
-      fetchHistory(sym, '1mo');
-      setNewStock('');
+    const sym = newStock.trim().toUpperCase();
+    if (!sym) {
+      setTrackError('Please enter a stock symbol.');
+      return;
     }
+    if (tracked.includes(sym)) {
+      setTrackError(`${sym} is already being tracked.`);
+      return;
+    }
+    setTrackError('');
+    await axios.post(`${API_URL}/tracked-stocks?symbol=${sym}`);
+    setTracked([...tracked, sym]);
+    setActiveRanges(prev => ({...prev, [sym]: '1mo'}));
+    fetchHistory(sym, '1mo');
+    setNewStock('');
   };
 
   const timeRanges = [
@@ -93,7 +101,7 @@ const Stocks = () => {
           type="text" 
           placeholder="Stock Symbol (e.g. MSFT)" 
           value={newStock} 
-          onChange={(e) => setNewStock(e.target.value)}
+          onChange={(e) => { setNewStock(e.target.value); setTrackError(''); }}
           style={{
             background: 'var(--bg-card)', border: '1px solid var(--border-glass)',
             color: 'white', padding: '0.8rem 1rem', borderRadius: '8px'
@@ -103,6 +111,11 @@ const Stocks = () => {
           Track Asset
         </button>
       </div>
+      {trackError && (
+        <div style={{ marginTop: '-1.5rem', marginBottom: '1.5rem', color: 'var(--accent-red)', fontSize: '0.9rem' }}>
+          {trackError}
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '3rem' }}>
         {tracked.map((symbol) => (
