@@ -1,4 +1,6 @@
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import json
 import re
 import os
@@ -18,7 +20,7 @@ OLLAMA_URL  = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 # Detect available models at startup and pick the best ones
 def _detect_models():
     try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5, verify=False)
         available = [m["name"].split(":")[0] for m in r.json().get("models", [])]
         print(f"[Loop] Ollama models available: {available}")
         # Portfolio manager: prefer llama3.2 (reliable JSON), then qwen3, then deepseek-r1
@@ -58,7 +60,7 @@ class PortfolioState(TypedDict):
 async def fetch_finnhub_quote(smb: str):
     url = f"https://finnhub.io/api/v1/quote?symbol={smb}&token={FINNHUB_KEY}"
     try:
-        res = await asyncio.to_thread(requests.get, url, timeout=10)
+        res = await asyncio.to_thread(requests.get, url, timeout=10, verify=False)
         d = res.json()
         return smb, {"price": d.get("c", 0.0), "high": d.get("h", 0.0),
                      "low": d.get("l", 0.0), "open": d.get("o", 0.0), "pc": d.get("pc", 0.0)}
@@ -68,36 +70,41 @@ async def fetch_finnhub_quote(smb: str):
 
 # ── LangGraph nodes ───────────────────────────────────────────────────────────
 async def fetch_market_data(state: PortfolioState) -> PortfolioState:
-    import yfinance as yf
-
     tasks = [fetch_finnhub_quote(smb) for smb in state["tracked_symbols"]]
     finnhub_results = await asyncio.gather(*tasks)
 
     def calc_technicals():
         metrics = {}
-        try:
-            df = yf.download(state["tracked_symbols"], period="3mo",
-                             group_by="ticker", threads=True, progress=False)
-            for smb in state["tracked_symbols"]:
-                metrics[smb] = {"rsi": 50.0, "macd": 0.0}
-                try:
-                    s = df[smb] if len(state["tracked_symbols"]) > 1 else df
-                    close = s["Close"].squeeze()
-                    if close.empty:
-                        continue
-                    delta = close.diff()
-                    gain  = delta.where(delta > 0, 0).rolling(14).mean()
-                    loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                    rsi   = 100 - (100 / (1 + gain / loss))
-                    ema12 = close.ewm(span=12, adjust=False).mean()
-                    ema26 = close.ewm(span=26, adjust=False).mean()
-                    metrics[smb]["rsi"]      = round(float(rsi.iloc[-1]), 2)
-                    metrics[smb]["macd"]     = round(float((ema12 - ema26).iloc[-1]), 4)
-                    metrics[smb]["yf_price"] = round(float(close.iloc[-1]), 2)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        import time
+        import pandas as pd
+        end_time = int(time.time())
+        start_time = end_time - 90 * 86400  # 3 months
+        
+        for smb in state["tracked_symbols"]:
+            metrics[smb] = {"rsi": 50.0, "macd": 0.0, "yf_price": 0.0}
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{smb}?range=3mo&interval=1d"
+                res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=5)
+                if res.status_code == 200:
+                    d = res.json()
+                    result = d.get("chart", {}).get("result", [])
+                    if result:
+                        closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                        valid_closes = [c for c in closes if c is not None]
+                        close = pd.Series(valid_closes)
+                        if len(close) < 15:
+                            continue
+                        delta = close.diff()
+                        gain  = delta.where(delta > 0, 0).rolling(14).mean()
+                        loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                        rsi   = 100 - (100 / (1 + gain / loss))
+                        ema12 = close.ewm(span=12, adjust=False).mean()
+                        ema26 = close.ewm(span=26, adjust=False).mean()
+                        metrics[smb]["rsi"]      = round(float(rsi.iloc[-1]), 2)
+                        metrics[smb]["macd"]     = round(float((ema12 - ema26).iloc[-1]), 4)
+                        metrics[smb]["yf_price"] = round(float(close.iloc[-1]), 2)
+            except Exception:
+                pass
         return metrics
 
     technicals = await asyncio.to_thread(calc_technicals)
@@ -162,7 +169,7 @@ async def reason_with_deepseek(state: PortfolioState) -> PortfolioState:
         tec = state["llama_ta"].get(smb, {})
         report += (
             f"[{smb}] ${md.get('price',0):.2f} | "
-            f"Sentiment: {sen.get('avg_sentiment','neutral')} ({sen.get('avg_score',0):.2f}) | "
+            f"Sentiment Score: {sen.get('avg_score',0.0):.4f} | "
             f"Trend: {tec.get('trend','neutral')} RSI:{tec.get('rsi',50)}\n"
         )
 
@@ -321,13 +328,14 @@ async def process_portfolio_async(db: Session, objective: str = "", target_amoun
         if symbol not in symbols or percentage <= 0 or action not in ["BUY", "SELL"]:
             continue
 
-        # Price: prefer live market_data, fallback to yfinance
+        # Price: prefer live market_data, fallback to Finnhub quote
         execute_price = final_state["market_data"].get(symbol, {}).get("price", 0.0)
         if execute_price <= 0:
             try:
-                import yfinance as yf
-                h = yf.Ticker(symbol).history(period="1d")
-                execute_price = float(h["Close"].iloc[-1]) if len(h) > 0 else 0.0
+                url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
+                res = requests.get(url, timeout=5, verify=False)
+                if res.status_code == 200:
+                    execute_price = float(res.json().get("c", 0.0))
             except Exception:
                 execute_price = 0.0
         if execute_price <= 0:

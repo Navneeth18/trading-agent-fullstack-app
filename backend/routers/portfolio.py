@@ -4,6 +4,8 @@ from database import get_db
 import models
 import yfinance as yf
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import os
 import time
 import json
@@ -11,6 +13,7 @@ import json
 router = APIRouter()
 
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "d6psvfpr01qk0cf1ql00d6psvfpr01qk0cf1ql0g")
 
 # ── Live price cache ──────────────────────────────────────────────────────────
 _price_cache: dict = {}
@@ -28,23 +31,28 @@ def get_live_prices(symbols: str):
         return cached[1]
 
     try:
-        df = yf.download(symbol_list, period="2d", progress=False, auto_adjust=True, threads=True)
-        result = {}
-        for sym in symbol_list:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def fetch_finnhub_quote(sym):
             try:
-                close_col = df["Close"] if len(symbol_list) == 1 else df["Close"][sym]
-                high_col  = df["High"]  if len(symbol_list) == 1 else df["High"][sym]
-                low_col   = df["Low"]   if len(symbol_list) == 1 else df["Low"][sym]
-                closes = close_col.dropna()
-                highs  = high_col.dropna()
-                lows   = low_col.dropna()
-                current = round(float(closes.iloc[-1]), 2) if len(closes) >= 1 else 0.0
-                prev    = round(float(closes.iloc[-2]), 2) if len(closes) >= 2 else current
-                d_high  = round(float(highs.iloc[-1]),  2) if len(highs)  >= 1 else current
-                d_low   = round(float(lows.iloc[-1]),   2) if len(lows)   >= 1 else current
-                result[sym] = {"current_price": current, "day_high": d_high, "day_low": d_low, "prev_close": prev}
+                url = f"https://finnhub.io/api/v1/quote?symbol={sym}&token={FINNHUB_KEY}"
+                res = requests.get(url, timeout=5, verify=False)
+                if res.status_code == 200:
+                    d = res.json()
+                    current = float(d.get("c", 0.0))
+                    high = float(d.get("h", 0.0))
+                    low = float(d.get("l", 0.0))
+                    prev = float(d.get("pc", 0.0))
+                    return sym, {"current_price": current, "day_high": high, "day_low": low, "prev_close": prev}
             except Exception:
-                result[sym] = {"current_price": 0.0, "day_high": 0.0, "day_low": 0.0, "prev_close": 0.0}
+                pass
+            return sym, {"current_price": 0.0, "day_high": 0.0, "day_low": 0.0, "prev_close": 0.0}
+
+        result = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            for sym, data in executor.map(fetch_finnhub_quote, symbol_list):
+                result[sym] = data
+
         _price_cache[cache_key] = (time.time(), result)
         return result
     except Exception:
@@ -95,10 +103,10 @@ def update_wallet(amount: float, db: Session = Depends(get_db)):
 
         if withdraw_amt <= wallet.balance:
             wallet.balance -= withdraw_amt
-            db.add(models.TransactionOverview(symbol="USD", transaction_type="WITHDRAWAL", quantity=withdraw_amt, price=1.0, reasoning="User requested withdrawal"))
+            db.add(models.TransactionOverview(symbol="USD", transaction_type="WITHDRAWAL", quantity=0, price=withdraw_amt, reasoning="User requested withdrawal"))
     else:
         wallet.balance += amount
-        db.add(models.TransactionOverview(symbol="USD", transaction_type="DEPOSIT", quantity=amount, price=1.0, reasoning="User added funds"))
+        db.add(models.TransactionOverview(symbol="USD", transaction_type="DEPOSIT", quantity=0, price=amount, reasoning="User added funds"))
 
     db.commit()
     return {"status": "success", "balance": wallet.balance}
@@ -184,29 +192,35 @@ def add_tracked_stock(symbol: str, db: Session = Depends(get_db)):
 # ── Price history & prediction ────────────────────────────────────────────────
 @router.get("/history/{symbol}")
 def get_stock_history(symbol: str, range: str = "1mo"):
-    interval_map = {"1d": "5m", "1wk": "1h", "1mo": "1d", "1y": "1wk", "5y": "1mo"}
-    interval = interval_map.get(range, "1d")
     try:
-        hist = yf.Ticker(symbol).history(period=range, interval=interval)
-        data = []
-        for index, row in hist.iterrows():
-            val = row["Close"]
-            try:
-                import math
-                if math.isnan(val):
-                    continue
-            except Exception:
-                pass
-            data.append({"time": str(index), "price": round(float(val), 2)})
-        return {"symbol": symbol, "range": range, "data": data}
+        import datetime
+        interval_map = {"1d": "5m", "1wk": "1h", "1mo": "1d", "1y": "1wk", "5y": "1mo"}
+        interval = interval_map.get(range, "1d")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval={interval}"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=10)
+        if res.status_code == 200:
+            d = res.json()
+            result = d.get("chart", {}).get("result", [])
+            if result:
+                timestamps = result[0].get("timestamp", [])
+                closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                data = []
+                for t, c in zip(timestamps, closes):
+                    if c is not None:
+                        iso_time = datetime.datetime.fromtimestamp(t).isoformat()
+                        data.append({"time": iso_time, "price": round(float(c), 2)})
+                return {"symbol": symbol, "range": range, "data": data}
+        return {"symbol": symbol, "range": range, "data": []}
     except Exception:
         return {"symbol": symbol, "range": range, "data": []}
-
 @router.get("/predict/{symbol}")
 def get_prediction(symbol: str):
     try:
-        hist = yf.Ticker(symbol).history(period="1mo")
-        latest_price = round(float(hist["Close"].iloc[-1]), 2) if len(hist) > 0 else 150.0
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
+        res = requests.get(url, timeout=5, verify=False)
+        latest_price = round(float(res.json().get("c", 0.0)), 2)
+        if latest_price <= 0.0:
+            latest_price = 150.0
     except Exception:
         latest_price = 150.0
 

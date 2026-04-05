@@ -44,6 +44,8 @@ class SentimentAnalyst:
         def fetch_and_score():
             import feedparser
             import requests
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             from datetime import datetime, timedelta
 
             headlines = []
@@ -67,7 +69,7 @@ class SentimentAnalyst:
                     end = datetime.now().strftime("%Y-%m-%d")
                     start = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
                     url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={start}&to={end}&token={finnhub_key}"
-                    res = requests.get(url, timeout=5)
+                    res = requests.get(url, timeout=5, verify=False)
                     if res.status_code == 200:
                         for item in res.json()[:10]:
                             hl = item.get("headline", "")
