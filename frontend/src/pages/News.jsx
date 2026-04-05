@@ -36,7 +36,14 @@ const News = () => {
       ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         {newsList.map((news) => (
-          <div key={news.id} className="glass-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <a
+            key={news.id}
+            href={news.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ textDecoration: 'none', color: 'inherit' }}
+          >
+          <div className="glass-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
             <div>
               <h3 style={{ marginBottom: '0.5rem', fontSize: '1.2rem' }}>{news.title}</h3>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', display: 'flex', gap: '1rem' }}>
@@ -54,6 +61,7 @@ const News = () => {
               {news.sentiment}
             </div>
           </div>
+          </a>
         ))}
       </div>
       )}

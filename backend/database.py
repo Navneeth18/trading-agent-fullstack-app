@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -6,14 +6,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# PostgreSQL Database Configuration
-DB_HOST = os.getenv("DB_HOST", "localhost")
-# Using SQLite Fallback since local Postgres installation appears structurally corrupted (InternalError base/1)
 SQLALCHEMY_DATABASE_URL = os.getenv("DB_URL", "sqlite:///./portfolio.db")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# SQLite needs StaticPool for multi-threaded FastAPI usage
+from sqlalchemy.pool import StaticPool
 
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_conn, _):
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA cache_size=10000")
+    cursor.close()
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db():

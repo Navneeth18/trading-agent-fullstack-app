@@ -23,6 +23,15 @@ def chat_with_llm(request: ChatRequest, db: Session = Depends(get_db)):
     OLLAMA_URL = "http://localhost:11434/api/generate"
     req_lower = request.message.lower()
     
+    # Detect best available model
+    try:
+        import requests as _req
+        tags = _req.get("http://localhost:11434/api/tags", timeout=3).json()
+        available = [m["name"].split(":")[0] for m in tags.get("models", [])]
+        chat_model = next((m for m in ["llama3.2", "qwen3", "deepseek-r1"] if m in available), "llama3.2")
+    except Exception:
+        chat_model = "llama3.2"
+    
     # 4. Chatbot Trade Execution Mode interceptor
     if "buy" in req_lower or "sell" in req_lower:
         import re
@@ -97,7 +106,7 @@ def chat_with_llm(request: ChatRequest, db: Session = Depends(get_db)):
     try:
         sys_prompt = f"You are Antigravity AI, the elite manager of this portfolio. Wallet: ${wallet_bal:.2f}. Assets owned: {asset_str}. Tracking actively: {tracked_str}. User says: " + request.message
         payload = {
-            "model": "llama3.2",
+            "model": chat_model,
             "prompt": sys_prompt,
             "stream": False
         }

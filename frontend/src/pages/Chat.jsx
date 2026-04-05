@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Send, Bot, User } from 'lucide-react';
 
@@ -6,6 +6,11 @@ const Chat = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   useEffect(() => {
     fetchHistory();
@@ -65,6 +70,7 @@ const Chat = () => {
               <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>Thinking...</div>
             </div>
           )}
+          <div ref={chatEndRef} />
         </div>
         
         <div className="chat-input">
