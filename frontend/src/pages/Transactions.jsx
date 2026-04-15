@@ -34,20 +34,24 @@ const Transactions = () => {
               <th style={{ padding: '1.2rem 1rem' }}>Timestamp</th>
               <th style={{ padding: '1.2rem 1rem' }}>Asset</th>
               <th style={{ padding: '1.2rem 1rem' }}>Action</th>
-              <th style={{ padding: '1.2rem 1rem' }}>Shares Mapped</th>
-              <th style={{ padding: '1.2rem 1rem' }}>Price Executed</th>
+              <th style={{ padding: '1.2rem 1rem' }}>Shares</th>
+              <th style={{ padding: '1.2rem 1rem' }}>Unit Price</th>
+              <th style={{ padding: '1.2rem 1rem' }}>Total Value</th>
               <th style={{ padding: '1.2rem 1rem' }}>Deepseek Strategic Reasoning</th>
             </tr>
           </thead>
           <tbody>
             {transactions.length === 0 ? (
                 <tr>
-                  <td colSpan="6" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                  <td colSpan="7" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
                     No executions recorded in internal database yet. Send funds or trigger Llama.
                   </td>
                 </tr>
             ) : (
-                transactions.map(tx => (
+                transactions.map(tx => {
+                    const isUSD = tx.symbol === 'USD';
+                    const totalValue = isUSD ? tx.price : (tx.quantity * tx.price);
+                    return (
                     <tr key={tx.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                         <td style={{ padding: '1.2rem 1rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                             {new Date(tx.timestamp).toLocaleString(undefined, {
@@ -56,7 +60,7 @@ const Transactions = () => {
                         </td>
                         <td style={{ padding: '1.2rem 1rem', fontWeight: 700 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {tx.symbol === 'USD' ? <Target size={16} color="var(--text-secondary)"/> : tx.transaction_type === "BUY" ? <TrendingUp size={16} color="var(--accent-green)"/> : <TrendingDown size={16} color="var(--accent-red)"/> }
+                            {isUSD ? <Target size={16} color="var(--text-secondary)"/> : tx.transaction_type === "BUY" ? <TrendingUp size={16} color="var(--accent-green)"/> : <TrendingDown size={16} color="var(--accent-red)"/> }
                             {tx.symbol}
                             </div>
                         </td>
@@ -66,11 +70,20 @@ const Transactions = () => {
                         }}>
                             {tx.transaction_type}
                         </td>
-                        <td style={{ padding: '1.2rem 1rem' }}>{tx.symbol === 'USD' ? '-' : tx.quantity.toFixed(4)}</td>
-                        <td style={{ padding: '1.2rem 1rem' }}>${tx.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                        <td style={{ padding: '1.2rem 1rem' }}>{isUSD ? '-' : tx.quantity.toFixed(4)}</td>
+                        <td style={{ padding: '1.2rem 1rem' }}>
+                            {isUSD ? '-' : `$${tx.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`}
+                        </td>
+                        <td style={{ 
+                            padding: '1.2rem 1rem', fontWeight: 700,
+                            color: tx.transaction_type === "BUY" ? 'var(--accent-green)' : tx.transaction_type === "SELL" ? 'var(--accent-red)' : 'var(--accent-blue)',
+                        }}>
+                            ${totalValue.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                        </td>
                         <td style={{ padding: '1.2rem 1rem', fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>{tx.reasoning}</td>
                     </tr>
-                ))
+                    );
+                })
             )}
           </tbody>
         </table>

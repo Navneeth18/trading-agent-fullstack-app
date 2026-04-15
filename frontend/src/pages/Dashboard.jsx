@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { DollarSign, Activity, BarChart2, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { DollarSign, Activity, BarChart2, TrendingUp, TrendingDown, Minus, RefreshCw, AlertTriangle, Zap } from 'lucide-react';
 
 const API = 'http://localhost:8000/api/portfolio';
 
@@ -8,28 +8,58 @@ const Dashboard = () => {
   const [summary, setSummary] = useState({ balance: 0, active_positions: 0, recent_transactions: [] });
   const [livePrices, setLivePrices] = useState({});
   const [assets, setAssets] = useState([]);
+  const [totalPnlData, setTotalPnlData] = useState(null);
+  const [pnlLoading, setPnlLoading] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const loadDashboard = async () => {
+    try {
+      const [sumRes, assetRes] = await Promise.all([
+        axios.get(`${API}/summary`),
+        axios.get(`${API}/assets`),
+      ]);
+      setSummary(sumRes.data);
+      const held = assetRes.data.filter(a => a.quantity > 0);
+      setAssets(held);
+      if (held.length > 0) {
+        const syms = held.map(a => a.symbol).join(',');
+        const priceRes = await axios.get(`${API}/live-prices?symbols=${syms}`);
+        setLivePrices(priceRes.data);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchTotalPnl = async () => {
+    setPnlLoading(true);
+    try {
+      const res = await axios.get(`${API}/total-pnl`);
+      setTotalPnlData(res.data);
+    } catch (e) {
+      console.error(e);
+    }
+    setPnlLoading(false);
+  };
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const [sumRes, assetRes] = await Promise.all([
-          axios.get(`${API}/summary`),
-          axios.get(`${API}/assets`),
-        ]);
-        setSummary(sumRes.data);
-        const held = assetRes.data.filter(a => a.quantity > 0);
-        setAssets(held);
-        if (held.length > 0) {
-          const syms = held.map(a => a.symbol).join(',');
-          const priceRes = await axios.get(`${API}/live-prices?symbols=${syms}`);
-          setLivePrices(priceRes.data);
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    load();
+    loadDashboard();
+    fetchTotalPnl();
   }, []);
+
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      await axios.post(`${API}/reset`);
+      setResetConfirm(false);
+      await loadDashboard();
+      await fetchTotalPnl();
+    } catch (e) {
+      console.error(e);
+    }
+    setResetting(false);
+  };
 
   const investedValue = assets.reduce((s, a) => s + a.quantity * a.average_price, 0);
   const currentValue  = assets.reduce((s, a) => {
@@ -45,7 +75,62 @@ const Dashboard = () => {
 
   return (
     <div>
-      <h1 style={{ marginBottom: '2rem' }}>Portfolio Overview</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+        <h1 style={{ margin: 0 }}>Portfolio Overview</h1>
+        <div style={{ display: 'flex', gap: '0.8rem' }}>
+          <button
+            onClick={fetchTotalPnl}
+            disabled={pnlLoading}
+            style={{
+              background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glass)',
+              color: 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem',
+            }}
+          >
+            <RefreshCw size={14} style={{ animation: pnlLoading ? 'spin 1s linear infinite' : 'none' }} />
+            Refresh P&L
+          </button>
+          {!resetConfirm ? (
+            <button
+              onClick={() => setResetConfirm(true)}
+              style={{
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+                color: 'var(--accent-red)', padding: '0.5rem 1rem', borderRadius: '8px',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem',
+              }}
+            >
+              <AlertTriangle size={14} /> Reset Portfolio
+            </button>
+          ) : (
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ color: 'var(--accent-red)', fontSize: '0.85rem', fontWeight: 600 }}>
+                Delete ALL data?
+              </span>
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                style={{
+                  background: 'var(--accent-red)', border: 'none', color: 'white',
+                  padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer',
+                  fontWeight: 700, fontSize: '0.85rem',
+                }}
+              >
+                {resetting ? 'Resetting…' : 'Yes, Reset'}
+              </button>
+              <button
+                onClick={() => setResetConfirm(false)}
+                style={{
+                  background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glass)',
+                  color: 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px',
+                  cursor: 'pointer', fontSize: '0.85rem',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Stat cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
@@ -81,6 +166,104 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
+
+      {/* Total P&L Card — Lifetime Performance */}
+      {totalPnlData && (
+        <div className="glass-card" style={{ marginBottom: '2rem', padding: '2rem' }}>
+          <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Zap size={24} color="var(--accent-purple)" /> Lifetime Performance
+          </h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '1.2rem' }}>
+            {/* Total P&L */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                Total P&L
+              </div>
+              <div style={{
+                fontSize: '1.6rem', fontWeight: 'bold',
+                color: totalPnlData.total_pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+              }}>
+                {totalPnlData.total_pnl >= 0 ? '+' : ''}${totalPnlData.total_pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </div>
+              <div style={{
+                fontSize: '0.85rem', fontWeight: 600,
+                color: totalPnlData.total_pnl_pct >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+              }}>
+                {totalPnlData.total_pnl_pct >= 0 ? '+' : ''}{totalPnlData.total_pnl_pct}%
+              </div>
+            </div>
+
+            {/* Realized */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                Realized P&L
+              </div>
+              <div style={{
+                fontSize: '1.3rem', fontWeight: 'bold',
+                color: totalPnlData.realized_pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+              }}>
+                {totalPnlData.realized_pnl >= 0 ? '+' : ''}${totalPnlData.realized_pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+
+            {/* Unrealized */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                Unrealized P&L
+              </div>
+              <div style={{
+                fontSize: '1.3rem', fontWeight: 'bold',
+                color: totalPnlData.unrealized_pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+              }}>
+                {totalPnlData.unrealized_pnl >= 0 ? '+' : ''}${totalPnlData.unrealized_pnl.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+
+            {/* Total Trades */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                Total Trades
+              </div>
+              <div style={{ fontSize: '1.3rem', fontWeight: 'bold' }}>
+                {totalPnlData.total_trades}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                {totalPnlData.total_buys} buys / {totalPnlData.total_sells} sells
+              </div>
+            </div>
+
+            {/* Portfolio Value */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                Current Value
+              </div>
+              <div style={{ fontSize: '1.3rem', fontWeight: 'bold' }}>
+                ${totalPnlData.total_current_value.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                from ${totalPnlData.total_capital_in.toLocaleString('en-US', { minimumFractionDigits: 2 })} invested
+              </div>
+            </div>
+          </div>
+
+          {/* Progress bar visual */}
+          <div style={{ marginTop: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+              <span>Initial: ${totalPnlData.total_capital_in.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+              <span>Current: ${totalPnlData.total_current_value.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+            </div>
+            <div style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '8px', height: '8px', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: '8px', transition: 'width 0.5s',
+                width: `${Math.min(Math.max((totalPnlData.total_current_value / totalPnlData.total_capital_in) * 50, 5), 100)}%`,
+                background: totalPnlData.total_pnl >= 0
+                  ? 'linear-gradient(135deg, var(--accent-green), #059669)'
+                  : 'linear-gradient(135deg, var(--accent-red), #dc2626)',
+              }} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Recent AI Decisions */}
       <h2 style={{ marginBottom: '1.5rem', marginTop: '1rem' }}>Recent AI Decisions</h2>

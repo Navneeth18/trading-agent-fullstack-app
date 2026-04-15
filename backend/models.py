@@ -44,3 +44,10 @@ class ChatHistory(Base):
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     sender = Column(String) # ai or user
     text = Column(String)
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String)
+    content = Column(String)  # extracted text content
+    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

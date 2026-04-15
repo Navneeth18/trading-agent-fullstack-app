@@ -26,15 +26,15 @@ app.add_middleware(
 def startup_event():
     from database import SessionLocal
     db = SessionLocal()
-    # Seed core stocks requested by user
-    core_stocks = ["MSFT", "GOOGL", "ADBE", "JPM", "BAC", "XOM", "LMT", "NOC", "JNJ", "PFE"]
-    buffer_stocks = ["AMZN", "INTC"] # buffers
-    
-    all_stocks = core_stocks + buffer_stocks
+    # Seed all tracked stocks — all are active (no buffer distinction)
+    all_stocks = ["MSFT", "GOOGL", "ADBE", "JPM", "BAC", "XOM", "LMT", "NOC", "JNJ", "PFE", "AMZN", "INTC"]
     for symbol in all_stocks:
-        if not db.query(models.TrackedStock).filter(models.TrackedStock.symbol == symbol).first():
-            is_active = symbol in core_stocks
-            db.add(models.TrackedStock(symbol=symbol, is_active=is_active))
+        existing = db.query(models.TrackedStock).filter(models.TrackedStock.symbol == symbol).first()
+        if not existing:
+            db.add(models.TrackedStock(symbol=symbol, is_active=True))
+        elif not existing.is_active:
+            # Activate any previously inactive "buffer" stocks
+            existing.is_active = True
     db.commit()
     db.close()
 

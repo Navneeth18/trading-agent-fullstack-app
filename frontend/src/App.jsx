@@ -1,6 +1,6 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, LineChart, Newspaper, MessageSquare, BookOpen, Wallet, TrendingUp } from 'lucide-react';
+import { LayoutDashboard, LineChart, Newspaper, MessageSquare, BookOpen, Wallet, TrendingUp, ShoppingCart } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Stocks from './pages/Stocks';
 import News from './pages/News';
@@ -8,6 +8,7 @@ import Chat from './pages/Chat';
 import PortfolioWallet from './pages/PortfolioWallet';
 import KnowledgeBase from './pages/KnowledgeBase';
 import Transactions from './pages/Transactions';
+import ManualTrade from './pages/ManualTrade';
 
 const Sidebar = () => {
   const location = useLocation();
@@ -36,6 +37,9 @@ const Sidebar = () => {
       <Link to="/transactions" className={path === '/transactions' ? 'active' : ''}>
         <TrendingUp size={20} /> Execution Ledger
       </Link>
+      <Link to="/trade" className={path === '/trade' ? 'active' : ''}>
+        <ShoppingCart size={20} /> Manual Trading
+      </Link>
       <Link to="/knowledge" className={path === '/knowledge' ? 'active' : ''}>
         <BookOpen size={20} /> Knowledge Base
       </Link>
@@ -57,6 +61,7 @@ const App = () => {
             <Route path="/wallet" element={<PortfolioWallet />} />
             <Route path="/knowledge" element={<KnowledgeBase />} />
             <Route path="/transactions" element={<Transactions />} />
+            <Route path="/trade" element={<ManualTrade />} />
           </Routes>
         </div>
       </div>

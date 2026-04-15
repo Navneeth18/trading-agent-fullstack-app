@@ -167,35 +167,74 @@ async def reason_with_deepseek(state: PortfolioState) -> PortfolioState:
         md  = state["market_data"].get(smb, {})
         sen = state["sentiment_data"].get(smb, {})
         tec = state["llama_ta"].get(smb, {})
+        held_qty = state["assets"].get(smb, 0)
+        held_val = held_qty * md.get('price', 0) if held_qty > 0 else 0
         report += (
-            f"[{smb}] ${md.get('price',0):.2f} | "
-            f"Sentiment Score: {sen.get('avg_score',0.0):.4f} | "
-            f"Trend: {tec.get('trend','neutral')} RSI:{tec.get('rsi',50)}\n"
+            f"[{smb}] Price=${md.get('price',0):.2f} | "
+            f"RSI={md.get('rsi',50):.1f} MACD={md.get('macd',0):.4f} | "
+            f"Sentiment={sen.get('avg_score',0.0):.4f} ({sen.get('avg_sentiment','neutral')}) | "
+            f"Trend={tec.get('trend','neutral')} | "
+            f"Held={held_qty:.2f} shares (${held_val:.2f})\n"
         )
 
     override_val = state.get("objective_amount", 0.0)
-    if state.get("objective") == "INVEST":
+    objective = state.get("objective", "")
+
+    if objective == "INVEST":
+        forced_action = "BUY"
         directive = (
-            f"You MUST BUY stocks totalling exactly ${override_val:.2f}. "
-            "Pick the best opportunities. Return percentage splits that sum to 100."
+            f"You MUST deploy exactly ${override_val:.2f} by BUYING stocks. "
+            "Pick the best opportunities from the tracked stocks above. "
+            "ALL actions MUST be BUY. Return percentage splits that sum to EXACTLY 100. "
+            "For example if you want 60% in MSFT and 40% in GOOGL, percentages are 60 and 40."
         )
-    elif state.get("objective") == "WITHDRAW":
+    elif objective == "WITHDRAW":
+        forced_action = "SELL"
         directive = (
-            f"You MUST SELL holdings totalling exactly ${override_val:.2f}. "
-            "Pick the weakest positions. Return percentage splits that sum to 100."
+            f"You MUST liquidate exactly ${override_val:.2f} worth of holdings by SELLING stocks. "
+            "Pick positions to sell from the held stocks above: " +
+            ", ".join(f"{s}({state['assets'].get(s,0):.2f} shares)" for s in state["tracked_symbols"] if state["assets"].get(s, 0) > 0) + ". "
+            "ALL actions MUST be SELL. Return percentage splits that sum to EXACTLY 100. "
+            "Each percentage represents that fraction of the total $" + f"{override_val:.2f}" + " to sell from that stock."
         )
     else:
+        forced_action = None
         directive = "Distribute capital strategically to hedge risk and catch momentum."
+
+    # Load knowledge base context for decision-making
+    knowledge_section = ""
+    try:
+        from routers.knowledge import get_knowledge_context
+        kb_db = SessionLocal()
+        kb_text = get_knowledge_context(kb_db, max_chars=2000)
+        kb_db.close()
+        if kb_text:
+            knowledge_section = (
+                "\n\nTRADING PRINCIPLES (from Knowledge Base — you MUST follow these):\n"
+                f"{kb_text}\n"
+                "Apply the above principles when making your trading decisions.\n"
+            )
+    except Exception as e:
+        print(f"[Portfolio] Knowledge base load failed: {e}")
 
     prompt = (
         f"You are a Portfolio Manager. {directive}\n\n"
         f"{report}\n"
-        f"Wallet: ${state['wallet_balance']:.2f}. Holdings: {state['assets']}\n\n"
-        "Respond with ONLY a valid JSON array of objects. Use curly braces for each object.\n"
-        'REQUIRED FORMAT (copy exactly): [{"symbol":"MSFT","action":"BUY","percentage":60,"reasoning":"reason"},{"symbol":"GOOGL","action":"BUY","percentage":40,"reasoning":"reason"}]\n'
-        "Rules: action must be BUY or SELL. All BUY percentages must sum to 100. No markdown, no explanation, no text outside the JSON array."
+        f"Wallet Cash: ${state['wallet_balance']:.2f}.\n"
+        f"{knowledge_section}\n"
+        "CRITICAL: You MUST respond with ONLY a valid JSON array. No other text.\n"
+        "Each object MUST have ALL four fields: symbol, action, percentage, reasoning.\n"
+        "The 'reasoning' field MUST contain a detailed 1-2 sentence explanation of WHY this trade.\n\n"
+        'EXACT FORMAT: [{"symbol":"MSFT","action":"BUY","percentage":60,"reasoning":"Strong RSI momentum at 65 with positive sentiment score of 0.4, indicating bullish continuation"},{"symbol":"GOOGL","action":"BUY","percentage":40,"reasoning":"Undervalued with negative MACD divergence suggesting reversal"}]\n\n'
+        "Rules:\n"
+        f"- action must be {forced_action if forced_action else 'BUY or SELL'}\n"
+        "- All percentages MUST sum to exactly 100\n"
+        "- reasoning MUST be a non-empty descriptive string explaining the trade rationale\n"
+        "- No markdown, no explanation, no text outside the JSON array\n"
+        "- Only use symbols from the portfolio report above"
     )
 
+    think_content = ""
     try:
         res = await asyncio.to_thread(
             requests.post, f"{OLLAMA_URL}/api/generate",
@@ -203,26 +242,22 @@ async def reason_with_deepseek(state: PortfolioState) -> PortfolioState:
             timeout=300
         )
         raw = res.json().get("response", "[]")
-        print(f"[Portfolio/{PORTFOLIO_MODEL}] Raw (first 400): {raw[:400]}")
+        print(f"[Portfolio/{PORTFOLIO_MODEL}] Raw (first 500): {raw[:500]}")
 
-        # 1. Strip think tags — but keep content inside as fallback
-        think_content = ""
+        # 1. Strip think tags — but keep content inside as fallback reasoning
         think_match = re.search(r"<think>(.*?)</think>", raw, flags=re.DOTALL)
         if think_match:
-            think_content = think_match.group(1)
+            think_content = think_match.group(1).strip()
         clean = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
         # If nothing outside think tags, search inside them
         search_text = clean if clean else think_content
 
-        # 2. Find a JSON array — use greedy match to capture full array
-        # First try a proper array with objects: [{...}]
+        # 2. Find a JSON array
         m = re.search(r"\[\s*\{.*\}\s*\]", search_text, flags=re.DOTALL)
         if not m:
-            # Try any array
             m = re.search(r"\[.*\]", search_text, flags=re.DOTALL)
         if not m:
-            # Try to reconstruct from individual objects
             objects = re.findall(r'\{[^{}]+\}', search_text, flags=re.DOTALL)
             if objects:
                 search_text = "[" + ",".join(objects) + "]"
@@ -230,17 +265,14 @@ async def reason_with_deepseek(state: PortfolioState) -> PortfolioState:
 
         if m:
             raw_json = m.group(0)
-            # Sanitize: remove literal newlines inside JSON strings that break json.loads
             raw_json = re.sub(r'(?<=:)\s*"([^"]*)"', lambda x: '"' + x.group(1).replace('\n', ' ').replace('\r', '') + '"', raw_json)
             try:
                 data = json.loads(raw_json)
             except json.JSONDecodeError:
-                # Fallback: extract individual valid objects
                 objects = re.findall(r'\{[^{}]+\}', raw_json, flags=re.DOTALL)
                 data = []
                 for obj in objects:
                     try:
-                        # Clean newlines inside each object too
                         obj_clean = re.sub(r'\n', ' ', obj)
                         data.append(json.loads(obj_clean))
                     except Exception:
@@ -254,6 +286,43 @@ async def reason_with_deepseek(state: PortfolioState) -> PortfolioState:
         print(f"[Portfolio] Exception: {e}")
         state["deepseek_plan"] = []
 
+    # ── Post-process: normalize reasoning key and force action direction ──
+    plan = state["deepseek_plan"]
+    for d in plan:
+        # Handle both "reason" and "reasoning" keys
+        if "reason" in d and "reasoning" not in d:
+            d["reasoning"] = d.pop("reason")
+        # Ensure reasoning is non-empty; use think content as fallback
+        if not d.get("reasoning") or str(d["reasoning"]).strip() == "":
+            symbol = d.get("symbol", "")
+            md = state["market_data"].get(symbol, {})
+            sen = state["sentiment_data"].get(symbol, {})
+            d["reasoning"] = (
+                f"AI decision based on RSI={md.get('rsi',50):.1f}, "
+                f"MACD={md.get('macd',0):.4f}, "
+                f"sentiment={sen.get('avg_score',0):.2f} ({sen.get('avg_sentiment','neutral')})"
+            )
+            if think_content:
+                # Try to extract symbol-specific reasoning from think content
+                sym_reason = re.search(rf"{symbol}[^.]*\.", think_content)
+                if sym_reason:
+                    d["reasoning"] = sym_reason.group(0).strip()
+
+    # Force action direction for objective-based trades
+    if forced_action:
+        plan = [d for d in plan if str(d.get("action", "")).upper() == forced_action
+                or str(d.get("action", "")).upper() not in ["BUY", "SELL"]]
+        for d in plan:
+            d["action"] = forced_action
+
+    # Re-normalize percentages to sum to exactly 100
+    total_pct = sum(float(d.get("percentage", 0)) for d in plan)
+    if plan and total_pct > 0 and abs(total_pct - 100) > 0.01:
+        for d in plan:
+            d["percentage"] = float(d.get("percentage", 0)) / total_pct * 100
+        print(f"[Portfolio] Re-normalized percentages from {total_pct:.1f}% to 100%")
+
+    state["deepseek_plan"] = plan
     state["execution_status"] = "PROCEED"
     return state
 
@@ -313,17 +382,21 @@ async def process_portfolio_async(db: Session, objective: str = "", target_amoun
     if not plan or final_state.get("execution_status") != "PROCEED":
         return []
 
-    buys  = [d for d in plan if str(d.get("action","")).upper() == "BUY"]
-    sells = [d for d in plan if str(d.get("action","")).upper() == "SELL"]
-    total_buy_pct  = sum(float(d.get("percentage", 0)) for d in buys)  or 1
-    total_sell_pct = sum(float(d.get("percentage", 0)) for d in sells) or 1
-
+    # Percentages should already be normalized to 100 by reason_with_deepseek
     executed = []
+    remaining_target = target_amount if target_amount > 0 else 0
+
     for decision in plan:
         action     = str(decision.get("action", "HOLD")).upper()
         percentage = float(decision.get("percentage", 0))
         symbol     = str(decision.get("symbol", "")).upper()
-        reasoning  = str(decision.get("reasoning", ""))
+        reasoning  = str(decision.get("reasoning", "") or decision.get("reason", ""))
+
+        # Ensure reasoning is never empty
+        if not reasoning.strip():
+            md = final_state["market_data"].get(symbol, {})
+            sen = final_state["sentiment_data"].get(symbol, {})
+            reasoning = f"AI trade: RSI={md.get('rsi',50):.1f}, sentiment={sen.get('avg_score',0):.2f}"
 
         if symbol not in symbols or percentage <= 0 or action not in ["BUY", "SELL"]:
             continue
@@ -347,7 +420,7 @@ async def process_portfolio_async(db: Session, objective: str = "", target_amoun
 
         if action == "BUY":
             if objective == "INVEST" and target_amount > 0:
-                cash = target_amount * (percentage / total_buy_pct)
+                cash = remaining_target * (percentage / 100.0) if remaining_target > 0 else 0
             else:
                 cash = wallet.balance * (percentage / 100.0)
             cash = min(cash, wallet.balance)
@@ -361,21 +434,29 @@ async def process_portfolio_async(db: Session, objective: str = "", target_amoun
             total_cost = (asset.quantity * asset.average_price) + cash
             asset.quantity    += qty
             asset.average_price = total_cost / asset.quantity
+            if remaining_target > 0:
+                remaining_target -= cash
 
         elif action == "SELL":
             if not asset or asset.quantity <= 0:
                 continue
-            if objective == "WITHDRAW" and target_amount > 0:
-                cash_needed = target_amount * (percentage / total_sell_pct)
-                qty = min(cash_needed / execute_price, asset.quantity)
+            if objective == "WITHDRAW" and remaining_target > 0:
+                # Calculate how much cash we want from THIS stock
+                cash_needed = remaining_target * (percentage / 100.0)
+                qty = cash_needed / execute_price
+                # Can't sell more than we hold
+                qty = min(qty, asset.quantity)
             else:
                 qty = asset.quantity * (percentage / 100.0)
             if qty <= 0:
                 continue
-            wallet.balance  += qty * execute_price
+            actual_cash = qty * execute_price
+            wallet.balance  += actual_cash
             asset.quantity  -= qty
             if asset.quantity <= 0.001:
                 asset.quantity = 0.0
+            if remaining_target > 0:
+                remaining_target -= actual_cash
 
         if qty > 0:
             db.add(models.TransactionOverview(
@@ -384,15 +465,72 @@ async def process_portfolio_async(db: Session, objective: str = "", target_amoun
             ))
             db.add(models.SystemLogs(
                 level="INFO",
-                message=f"[{objective or 'AUTO'}] {action} {qty:.4f} {symbol} @ ${execute_price:.2f}",
+                message=f"[{objective or 'AUTO'}] {action} {qty:.4f} {symbol} @ ${execute_price:.2f} | {reasoning[:80]}",
             ))
             executed.append({
                 **decision,
                 "executed_qty": round(qty, 4),
                 "executed_price": execute_price,
+                "reasoning": reasoning,
+            })
+
+    # ── Second pass: if withdraw target not fully met, sell more from held assets ──
+    if objective == "WITHDRAW" and remaining_target > 1.0:
+        print(f"[Portfolio] Shortfall after first pass: ${remaining_target:.2f}. Selling more to cover.")
+        held_assets = db.query(models.Asset).filter(models.Asset.quantity > 0.001).all()
+        # Calculate total held value
+        total_held_value = 0.0
+        asset_values = []
+        for a in held_assets:
+            p = final_state["market_data"].get(a.symbol, {}).get("price", 0.0)
+            if p <= 0:
+                try:
+                    url = f"https://finnhub.io/api/v1/quote?symbol={a.symbol}&token={FINNHUB_KEY}"
+                    r = requests.get(url, timeout=5, verify=False)
+                    p = float(r.json().get("c", 0.0))
+                except Exception:
+                    continue
+            if p <= 0:
+                continue
+            val = a.quantity * p
+            total_held_value += val
+            asset_values.append((a, p, val))
+
+        for a, p, val in asset_values:
+            if remaining_target <= 1.0:
+                break
+            # Sell proportionally: this asset's share of held value * remaining target
+            sell_val = min(remaining_target, val)
+            sell_qty = sell_val / p
+            sell_qty = min(sell_qty, a.quantity)
+            if sell_qty <= 0:
+                continue
+            actual = sell_qty * p
+            wallet.balance += actual
+            a.quantity -= sell_qty
+            if a.quantity <= 0.001:
+                a.quantity = 0.0
+            remaining_target -= actual
+
+            reasoning = f"Additional sell to meet withdrawal target (shortfall coverage)"
+            db.add(models.TransactionOverview(
+                symbol=a.symbol, transaction_type="SELL",
+                quantity=sell_qty, price=p, reasoning=reasoning,
+            ))
+            db.add(models.SystemLogs(
+                level="INFO",
+                message=f"[WITHDRAW-EXTRA] SELL {sell_qty:.4f} {a.symbol} @ ${p:.2f} to cover shortfall",
+            ))
+            executed.append({
+                "symbol": a.symbol, "action": "SELL",
+                "executed_qty": round(sell_qty, 4),
+                "executed_price": p,
+                "reasoning": reasoning,
             })
 
     db.commit()
+    total_executed_value = sum(e["executed_qty"] * e["executed_price"] for e in executed)
+    print(f"[Portfolio] Executed {len(executed)} trades for objective={objective}, target=${target_amount:.2f}, actual=${total_executed_value:.2f}")
     return executed
 
 
